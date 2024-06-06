@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
+	"os"
 
 	"code.vegaprotocol.io/pyth-pull-prices/pythmcapindex"
 	"code.vegaprotocol.io/pyth-pull-prices/pythrebase"
@@ -19,6 +21,7 @@ import (
 var (
 	endpoint      string
 	port          uint
+	configPath    string
 	pythRebase    = common.HexToAddress("0x2ba6654fdb605637994047eca217a02e224c4828")
 	pythMcapIndex = common.HexToAddress("0xF60DA8e2DACfc5677F11c370F6C9d595f13C13Dc")
 
@@ -55,9 +58,14 @@ var (
 	}
 )
 
+type config struct {
+	Pairs   map[string]string     `json:"pairs"`
+	Indexes map[string][]pairMcap `json:"indexes"`
+}
+
 type pairMcap struct {
-	Pair string
-	MCap *big.Int
+	Pair string   `json:"pair"`
+	MCap *big.Int `json:"m_cap"`
 }
 
 type priceProvider struct {
@@ -150,6 +158,10 @@ func main() {
 		log.Fatalf("missing required parameter endpoint")
 	}
 
+	if len(configPath) > 0 {
+		loadCustomConfig()
+	}
+
 	ethClient, err := ethclient.DialContext(context.Background(), endpoint)
 	if err != nil {
 		log.Fatalf("could not start eth client: %v", err)
@@ -173,7 +185,25 @@ func main() {
 	log.Fatal(http.ListenAndServe(httpBind, nil))
 }
 
+func loadCustomConfig() {
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		log.Fatalf("couldn't read configuration file: %v", err)
+	}
+
+	c := config{}
+	err = json.Unmarshal(content, &c)
+	if err != nil {
+		log.Fatalf("couldn't unmarshal configuration file: %v", err)
+	}
+
+	// all good here, just set the global variable
+	pairs = c.Pairs
+	indexes = c.Indexes
+}
+
 func init() {
 	flag.StringVar(&endpoint, "endpoint", "", "the gnosis RPC endpoint")
+	flag.StringVar(&configPath, "config", "", "The path to a custom config, if none set use default values")
 	flag.UintVar(&port, "port", 8080, "the HTTP API port")
 }
