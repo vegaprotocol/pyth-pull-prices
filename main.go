@@ -72,6 +72,8 @@ type priceProvider struct {
 	ethClient     *ethclient.Client
 	pythRebase    *pythrebase.PythrebaseCaller
 	pythMcapIndex *pythmcapindex.PythmcapindexCaller
+
+	cache map[string]*big.Int
 }
 
 func (p *priceProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -93,14 +95,14 @@ func (p *priceProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 
 	} else if indexCfg, ok := indexes[sym]; ok {
-		p.doPythMcapPrice(w, r, indexCfg)
+		p.doPythMcapPrice(w, r, indexCfg, sym)
 		return
 	}
 
 	http.Error(w, "unsupported pair symbol", http.StatusBadRequest)
 }
 
-func (p *priceProvider) doPythMcapPrice(w http.ResponseWriter, r *http.Request, pairCaps []pairMcap) {
+func (p *priceProvider) doPythMcapPrice(w http.ResponseWriter, r *http.Request, pairCaps []pairMcap, sym string) {
 	indexAssets := make([]pythmcapindex.IndexAsset, 0, len(pairCaps))
 	for _, v := range pairCaps {
 		pairId, ok := pairs[v.Pair]
@@ -124,13 +126,21 @@ func (p *priceProvider) doPythMcapPrice(w http.ResponseWriter, r *http.Request, 
 		})
 	}
 
+	cachedPrice := p.cache[sym]
+
 	price, err := p.pythMcapIndex.GetIndexPrice(&bind.CallOpts{
 		Context: r.Context(),
 	}, indexAssets)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("internal server error: %v", err), http.StatusInternalServerError)
-		return
+		if cachedPrice == nil {
+			http.Error(w, fmt.Sprintf("internal server error: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		price = cachedPrice
 	}
+
+	p.cache[sym] = price
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"price": "%v"}`, price.String())
 }
@@ -139,13 +149,21 @@ func (p *priceProvider) doPairPrice(w http.ResponseWriter, r *http.Request, id [
 	var id32 [32]byte
 	copy(id32[:], id)
 
+	cachedPrice := p.cache[string(id)]
+
 	price, err := p.pythRebase.GetPrice0(&bind.CallOpts{
 		Context: r.Context(),
 	}, id32)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("internal server error: %v", err), http.StatusInternalServerError)
-		return
+		if cachedPrice == nil {
+			http.Error(w, fmt.Sprintf("internal server error: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		price = cachedPrice
 	}
+
+	p.cache[string(id)] = price
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"price": "%v"}`, price.String())
@@ -177,7 +195,10 @@ func main() {
 		log.Fatalf("could not instantiate pyth mcap index caller: ", err)
 	}
 
-	pp := &priceProvider{ethClient, pythRebase, pythMcapIndex}
+	cache := make(map[string]*big.Int)
+
+	pp := &priceProvider{ethClient, pythRebase, pythMcapIndex, cache}
+
 	http.Handle("/avgPrice", pp)
 
 	httpBind := fmt.Sprintf(":%v", port)
